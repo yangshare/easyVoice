@@ -1,6 +1,13 @@
 @echo off
 setlocal enabledelayedexpansion
 
+:: NOTE: This file MUST be saved as UTF-8 (without BOM) with CRLF line endings.
+:: The `chcp 65001` below switches the console to UTF-8 at runtime, so the
+:: Chinese text below displays correctly regardless of the system default code
+:: page (GBK/936 or UTF-8/65001). Do NOT add a BOM -- cmd.exe chokes on it.
+
+chcp 65001 >nul
+
 echo ====================================
 echo easyVoice - 发版脚本
 echo ====================================

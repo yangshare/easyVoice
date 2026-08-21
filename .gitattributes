@@ -1,0 +1,4 @@
+# Windows 批处理脚本必须是 CRLF 换行，否则 cmd.exe 解析会错乱
+# 统一以 UTF-8（无 BOM）存储，运行时通过脚本内 `chcp 65001` 切换控制台编码，
+# 兼容 GBK(936) / UTF-8(65001) 两种系统默认代码页，避免中文乱码。
+*.bat text eol=crlf working-tree-encoding=UTF-8
