@@ -205,6 +205,7 @@ class EdgeTTS {
     let rejectBuffer: (reason: Error) => void
     let resolveFile: () => void
     let rejectFile: (reason: Error) => void
+    let isTurnEnded = false
 
     // 初始化输出
     if (outputType === 'file') {
@@ -222,6 +223,10 @@ class EdgeTTS {
           _wsConnect.close()
           callback(err)
         },
+      })
+      // 兜底监听：防止消费方未监听 error 事件时 destroy(err) 导致进程崩溃
+      readableStream.on('error', (err: Error) => {
+        console.error(`edge-tts readableStream error: ${err.message}`)
       })
     }
 
@@ -260,19 +265,39 @@ class EdgeTTS {
       } else {
         const message = data.toString()
         if (message.includes('Path:turn.end')) {
-          if (saveSubtitles) this._saveSubFile(subFile, text, audioPath!, outputType)
-          if (outputType === 'file') {
-            audioStream!.end()
+          if (isTurnEnded) return
+          isTurnEnded = true
+          if (saveSubtitles) {
+            // 字幕落盘不阻塞音频结束信号，失败仅记录日志
+            void this._saveSubFile(subFile, text, audioPath!, outputType).catch((err) => {
+              console.error(`Failed to save subtitles: ${(err as Error).message}`)
+            })
+          }
+          try {
+            if (outputType === 'file') {
+              audioStream!.end()
+              _wsConnect.close()
+              resolveFile()
+            } else if (outputType === 'stream' && !isStreamDestroyed) {
+              readableStream!.push(null)
+              console.log(`close edge-tts readableStream...`)
+              _wsConnect.close()
+            } else if (outputType === 'buffer') {
+              const audioBuffer = Buffer.concat(audioChunks)
+              _wsConnect.close()
+              resolveBuffer?.(audioBuffer) // 直接调用 resolve
+            }
+          } catch (err) {
+            const error = err instanceof Error ? err : new Error(String(err))
+            if (outputType === 'file') {
+              audioStream?.end()
+              rejectFile?.(error)
+            } else if (outputType === 'stream' && !isStreamDestroyed) {
+              readableStream?.destroy(error)
+            } else if (outputType === 'buffer') {
+              rejectBuffer?.(error)
+            }
             _wsConnect.close()
-            resolveFile()
-          } else if (outputType === 'stream' && !isStreamDestroyed) {
-            readableStream!.push(null)
-            console.log(`close edge-tts readableStream...`)
-            _wsConnect.close()
-          } else if (outputType === 'buffer') {
-            const audioBuffer = Buffer.concat(audioChunks)
-            _wsConnect.close()
-            resolveBuffer?.(audioBuffer) // 直接调用 resolve
           }
         } else if (message.includes('Path:audio.metadata')) {
           const splitTexts = message.split('\r\n')

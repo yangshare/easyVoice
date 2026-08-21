@@ -35,6 +35,26 @@ enum ErrorMessages {
   INCOMPLETE_RESULT = 'Incomplete TTS result',
 }
 
+/** 将分段音频流拼接到输出流（不结束目标流），等待该段 end/error */
+const pumpTo = (source: Readable, dest: PassThrough) =>
+  new Promise<void>((resolve, reject) => {
+    source.on('end', resolve)
+    source.on('error', reject)
+    source.pipe(dest, { end: false })
+  })
+
+/** 标记任务失败并销毁输出流（LLM 流式与分段列表两条路径共用） */
+const failTaskAndStream = (task: Task, outputStream: PassThrough, cause: unknown): Error => {
+  const error = cause instanceof Error ? cause : new Error(String(cause))
+  try {
+    taskManager.failTask(task.id, { message: error.message })
+  } catch (taskError) {
+    logger.warn(`Failed to mark task ${task.id} as failed: ${(taskError as Error).message}`)
+  }
+  if (!outputStream.destroyed) outputStream.destroy(error)
+  return error
+}
+
 /**
  * 流式生成文本转语音 (TTS) 的音频和字幕
  */
@@ -71,9 +91,9 @@ export async function generateTTSStream(params: Required<EdgeSchema>, task: Task
   }
 
   if (useLLM) {
-    generateWithLLMStream(task)
+    await generateWithLLMStream(task)
   } else {
-    generateWithoutLLMStream({ ...params, output: segment.id }, task)
+    await generateWithoutLLMStream({ ...params, output: segment.id }, task)
   }
 }
 export async function generateTTSStreamJson(formatedBody: Required<EdgeSchema>[], task: Task) {
@@ -83,7 +103,7 @@ export async function generateTTSStreamJson(formatedBody: Required<EdgeSchema>[]
   logger.info(`generateTTSStreamJson splitText length: ${formatedBody.length} `)
   const buildSegments = segments.map((segment) => ({ ...segment, output }))
   logger.info('buildSegments:', buildSegments)
-  buildSegmentList(buildSegments, task)
+  await buildSegmentList(buildSegments, task)
 }
 
 /**
@@ -110,7 +130,7 @@ async function generateWithLLMStream(task: Task) {
         'LLM response is not an array, please switch to Edge TTS mode or use another model'
       )
     }
-    buildSegmentList(formatLlmSegments(llmSegments), task)
+    await buildSegmentList(formatLlmSegments(llmSegments), task)
   } else {
     const output = resolve(AUDIO_DIR, id)
     let count = 0
@@ -120,37 +140,59 @@ async function generateWithLLMStream(task: Task) {
     }
     const localStream = createWriteStream(output)
     const outputStream = new PassThrough()
+    let streamFailed = false
+
+    const failStream = (cause: unknown) => {
+      if (streamFailed) return
+      streamFailed = true
+      const error = failTaskAndStream(task, outputStream, cause)
+      logger.error(`LLM streaming failed: ${error.message}`)
+      if (!localStream.destroyed) localStream.destroy()
+      if (!res.writableEnded) res.end()
+    }
+
+    outputStream.on('error', failStream)
+    localStream.on('error', failStream)
+    outputStream.on('finish', () => {
+      if (!streamFailed) task?.endTask?.(task.id)
+    })
+    res.on('close', () => {
+      if (!outputStream.writableFinished && !streamFailed) {
+        failStream(new Error('Client disconnected'))
+      }
+    })
     outputStream.pipe(res)
     outputStream.pipe(localStream)
 
-    for (let seg of segments) {
-      count++
-      const prompt = getPrompt(lang, voiceList, seg)
-      logger.debug(`Prompt for LLM: ${prompt}`)
-      const llmResponse = await fetchLLMSegment(prompt)
-      let llmSegments = llmResponse?.result || llmResponse?.segments || []
-      if (!Array.isArray(llmSegments)) {
-        throw new Error(
-          'LLM response is not an array, please switch to Edge TTS mode or use another model'
-        )
+    try {
+      for (let seg of segments) {
+        count++
+        const prompt = getPrompt(lang, voiceList, seg)
+        logger.debug(`Prompt for LLM: ${prompt}`)
+        const llmResponse = await fetchLLMSegment(prompt)
+        let llmSegments = llmResponse?.result || llmResponse?.segments || []
+        if (!Array.isArray(llmSegments)) {
+          throw new Error(
+            'LLM response is not an array, please switch to Edge TTS mode or use another model'
+          )
+        }
+        for (let segment of formatLlmSegments(llmSegments)) {
+          const stream = (await generateSingleVoiceStream({
+            ...segment,
+            output,
+            outputType: 'stream',
+          })) as Readable
+          await pumpTo(stream, outputStream)
+        }
+        logger.info(`Progress: ${getProgress()}%`)
       }
-      for (let segment of formatLlmSegments(llmSegments)) {
-        const stream = (await generateSingleVoiceStream({
-          ...segment,
-          output,
-          outputType: 'stream',
-        })) as Readable
-        stream.pipe(outputStream, { end: false })
-        await new Promise((resolve) => {
-          stream.on('end', resolve)
-        })
-      }
-      logger.info(`Progress: ${getProgress()}%`)
+      outputStream.end()
+      setTimeout(() => {
+        handleSrt(output)
+      }, 200)
+    } catch (err) {
+      failStream(err)
     }
-    outputStream.end()
-    setTimeout(() => {
-      handleSrt(output)
-    }, 200)
   }
 }
 const buildFinal = async (finalSegments: TTSResult[], id: string) => {
@@ -185,10 +227,10 @@ async function generateWithoutLLMStream(params: TTSParams, task: Task) {
   const { length, segments } = splitText(text)
   logger.info(`splitText length: ${length} `)
   if (length <= 1) {
-    buildSegment(params, task)
+    await buildSegment(params, task)
   } else {
     const buildSegments = segments.map((segment) => ({ ...params, text: segment }))
-    buildSegmentList(buildSegments, task)
+    await buildSegmentList(buildSegments, task)
   }
 }
 
@@ -278,6 +320,7 @@ async function buildSegmentList(segments: BuildSegment[], task: Task): Promise<v
       }, 200)
     },
     onClose: () => {
+      if (outputStream.errored) return
       task?.endTask?.(task.id)
       logger.info(`Streaming ${task.id} closed`)
     },
@@ -314,16 +357,15 @@ async function buildSegmentList(segments: BuildSegment[], task: Task): Promise<v
     try {
       // TODO: Concurrency of streaming flow
       const audioStream = await generateWithRetry()
-      await audioStream.pipe(outputStream, { end: false })
-      await new Promise((resolve) => audioStream.on('end', resolve))
+      await pumpTo(audioStream, outputStream)
       completedSegments++
       logger.info(`processing text:\n ${segment.text.slice(0, 10)}...`)
       logger.info(`Segment ${index + 1}/${totalSegments} completed. Progress: ${progress()}%`)
       await processSegment(index + 1)
     } catch (err) {
-      const { segmentIndex, attempt, message } = err as SegmentError
-      logger.error(`Segment ${segmentIndex + 1} failed after ${attempt} retries: ${message}`)
-      outputStream.emit('error', err)
+      const { segmentIndex = index, attempt = 1 } = err as Partial<SegmentError>
+      const error = failTaskAndStream(task, outputStream, err)
+      logger.error(`Segment ${segmentIndex + 1} failed after ${attempt} retries: ${error.message}`)
     }
   }
 

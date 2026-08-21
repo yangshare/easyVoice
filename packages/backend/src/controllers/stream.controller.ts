@@ -42,7 +42,7 @@ export async function createTaskStream(req: Request, res: Response, next: NextFu
     const task = taskManager.createTask(formattedBody)
     task.context = { req, res, body: req.body }
     logger.info(`Generated stream task ID: ${task.id}`)
-    generateTTSStream(formattedBody, task)
+    await generateTTSStream(formattedBody, task)
   } catch (error) {
     console.log(`createTaskStream error:`, error)
     next(error)
@@ -64,7 +64,7 @@ export async function generateJson(req: Request, res: Response, next: NextFuncti
     const segment: Segment = { id: generateId(voice, text), text }
     task.context = { req, res, segment, body: req.body }
     logger.info(`Generated stream task ID: ${task.id}`)
-    generateTTSStreamJson(formatedBody, task)
+    await generateTTSStreamJson(formatedBody, task)
   } catch (error) {
     console.log(`createTaskStream error:`, error)
     next(error)
