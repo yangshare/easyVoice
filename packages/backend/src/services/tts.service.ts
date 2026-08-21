@@ -4,8 +4,8 @@ import ffmpeg from 'fluent-ffmpeg'
 import { AUDIO_DIR, STATIC_DOMAIN, EDGE_API_LIMIT } from '../config'
 import { logger } from '../utils/logger'
 import { getPrompt } from '../llm/prompt/generateSegment'
+import { fetchLLMSegment as fetchSegment, formatLlmSegments as formatSegments } from '../llm/fetchSegment'
 import { ensureDir, generateId, getLangConfig, readJson } from '../utils'
-import { openai } from '../utils/openai'
 import { splitText } from './text.service'
 import { generateSingleVoice, generateSrt } from './edge-tts.service'
 import { EdgeSchema } from '../schema/generate'
@@ -84,13 +84,7 @@ async function generateWithLLM(
 ): Promise<TTSResult> {
   const { text, id } = segment
   const { length, segments } = splitText(text.trim())
-  const formatLlmSegments = (llmSegments: any) =>
-    llmSegments
-      .filter((segment: any) => segment.text)
-      .map((segment: any) => ({
-        ...segment,
-        voice: segment.name,
-      }))
+  const formatLlmSegments = (llmSegments: any[]) => formatSegments(llmSegments, voiceList)
   if (length <= 1) {
     const prompt = getPrompt(lang, voiceList, segments[0])
     // logger.debug(`Prompt for LLM: ${prompt}`)
@@ -298,37 +292,10 @@ function validateLangAndVoice(lang: string, voice: string): void {
 }
 
 /**
- * 从 LLM 获取分段参数
+ * 从 LLM 获取分段参数（带重试与容错，见 llm/fetchSegment）
  */
 async function fetchLLMSegment(prompt: string): Promise<any> {
-  const response = await openai.createChatCompletion({
-    messages: [
-      {
-        role: 'system',
-        content: 'You are a helpful assistant. And you can return valid json object',
-      },
-      { role: 'user', content: prompt },
-    ],
-    // temperature: 0.7,
-    // max_tokens: 500,
-    response_format: { type: 'json_object' },
-  })
-
-  if (!response.choices[0].message.content) {
-    throw new Error(ErrorMessages.INVALID_API_RESPONSE)
-  }
-  return parseLLMResponse(response)
-}
-
-/**
- * 解析 LLM 响应
- */
-function parseLLMResponse(response: any): TTSParams {
-  const params = JSON.parse(response.choices[0].message.content) as TTSParams
-  if (!params || typeof params !== 'object') {
-    throw new Error(ErrorMessages.INVALID_PARAMS_FORMAT)
-  }
-  return params
+  return fetchSegment(prompt)
 }
 
 /**

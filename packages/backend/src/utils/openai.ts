@@ -1,5 +1,5 @@
 import { AxiosError } from 'axios'
-import { MODEL_NAME, OPENAI_BASE_URL, OPENAI_API_KEY } from '../config'
+import { MODEL_NAME, OPENAI_BASE_URL, OPENAI_API_KEY, OPENAI_TIMEOUT } from '../config'
 import { logger } from './logger'
 import { fetcher } from './request'
 
@@ -20,7 +20,7 @@ export function createOpenAIClient() {
   let currentConfig: OpenAIConfig = {
     baseURL: OPENAI_BASE_URL,
     model: MODEL_NAME,
-    timeout: 60000,
+    timeout: OPENAI_TIMEOUT,
     apiKey: OPENAI_API_KEY,
   }
   logger.debug(`init openai with: `, {
@@ -66,9 +66,15 @@ export function createOpenAIClient() {
 
       return response.data
     } catch (error) {
-      console.log(error)
       if (error instanceof AxiosError) {
-        console.log(`createChatCompletion`, error.response?.data?.error)
+        logger.error(
+          `Chat completion request failed: ${error.code || error.message}` +
+            (error.response
+              ? `, status: ${error.response.status}, data: ${JSON.stringify(error.response.data)}`
+              : '')
+        )
+      } else {
+        logger.error(`Chat completion request failed: ${String(error)}`)
       }
       throw new Error(
         `Chat completion request failed: ${error instanceof Error ? error.message : String(error)}`

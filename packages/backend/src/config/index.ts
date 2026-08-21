@@ -19,6 +19,8 @@ export const ALLOWED_EXTENSIONS = new Set(['.mp3', '.wav', '.ogg', '.flac', '.sr
 export const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL
 export const OPENAI_API_KEY = process.env.OPENAI_API_KEY
 export const MODEL_NAME = process.env.MODEL_NAME
+// LLM 请求超时时间（毫秒），长文本生成 JSON 可能较慢，默认放宽到 180s
+export const OPENAI_TIMEOUT = parseInt(process.env.OPENAI_TIMEOUT || '180000', 10)
 
 export const STATIC_DOMAIN = process.env.NODE_ENV === 'development' ? 'http://localhost:3000' : ''
 
