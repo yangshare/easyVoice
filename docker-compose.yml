@@ -1,6 +1,6 @@
 services:
   easyvoice:
-    image: cosincox/easyvoice:latest
+    image: yangshare/easyvoice:latest
     restart: unless-stopped
     container_name: easyvoice
     ports:

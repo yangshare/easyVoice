@@ -54,7 +54,7 @@
 
 ```bash
 # 极简运行，你可以通过 -e 指定环境变量
-docker run -d -p 3000:3000 -v $(pwd)/audio:/app/audio cosincox/easyvoice:latest
+docker run -d -p 3000:3000 -v $(pwd)/audio:/app/audio yangshare/easyvoice:latest
 ```
 
 or 将仓库克隆到本地，使用 Docker Compose 一键运行！
