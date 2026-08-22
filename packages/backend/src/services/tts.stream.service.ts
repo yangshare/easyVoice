@@ -43,6 +43,61 @@ const pumpTo = (source: Readable, dest: PassThrough) =>
     source.pipe(dest, { end: false })
   })
 
+/**
+ * 生成单段音频并收集为完整 Buffer（带重试）。
+ * 每次重试都会重新建立 edge-tts 连接并重新生成整段，
+ * 丢弃上次未完成的数据，确保音频完整不截断。
+ * 同时覆盖 WebSocket 连接阶段与传输中途的 1006 异常断开
+ * （连接阶段由 generateSingleVoiceStream 抛错、传输中途由收集流的 error 事件捕获）。
+ */
+async function collectSegmentBufferWithRetry(
+  segment: any,
+  output: string,
+  maxRetries = 3
+): Promise<Buffer> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const stream = (await generateSingleVoiceStream({
+        ...segment,
+        output,
+        outputType: 'stream',
+      })) as Readable
+      const chunks: Buffer[] = []
+      await new Promise<void>((resolve, reject) => {
+        let settled = false
+        stream.on('data', (chunk: Buffer) => chunks.push(chunk))
+        stream.on('end', () => {
+          if (!settled) {
+            settled = true
+            resolve()
+          }
+        })
+        stream.on('error', (err: Error) => {
+          if (!settled) {
+            settled = true
+            reject(err)
+          }
+        })
+      })
+      return Buffer.concat(chunks)
+    } catch (err) {
+      lastError = err
+      if (attempt >= maxRetries) {
+        throw Object.assign(err as Error, {
+          segmentIndex: -1,
+          attempt,
+        } as SegmentError)
+      }
+      logger.warn(
+        `Segment buffer attempt ${attempt}/${maxRetries} failed: ${(err as Error).message}`
+      )
+      await asyncSleep(1000)
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError))
+}
+
 /** 标记任务失败并销毁输出流（LLM 流式与分段列表两条路径共用） */
 const failTaskAndStream = (task: Task, outputStream: PassThrough, cause: unknown): Error => {
   const error = cause instanceof Error ? cause : new Error(String(cause))
@@ -159,12 +214,10 @@ async function generateWithLLMStream(task: Task) {
         logger.debug(`Prompt for LLM: ${prompt}`)
         const llmSegments = await fetchLLMSegment(prompt)
         for (let segment of formatLlmSegments(llmSegments)) {
-          const stream = (await generateSingleVoiceStream({
-            ...segment,
-            output,
-            outputType: 'stream',
-          })) as Readable
-          await pumpTo(stream, outputStream)
+          const buffer = await collectSegmentBufferWithRetry(segment, output)
+          if (!outputStream.write(buffer)) {
+            await new Promise<void>((resolve) => outputStream.once('drain', resolve))
+          }
         }
         logger.info(`Progress: ${getProgress()}%`)
       }
