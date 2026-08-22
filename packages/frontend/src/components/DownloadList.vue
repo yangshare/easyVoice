@@ -106,7 +106,7 @@ import {
   Service,
   WarningFilled,
 } from '@element-plus/icons-vue'
-import { useAudio } from '@/utils/index'
+import { asyncSleep, useAudio } from '@/utils/index'
 import type { Audio } from '../stores/generation'
 
 const store = useGenerationStore()
@@ -175,10 +175,34 @@ const downloadAudio = (item: Audio, _: number) => {
   if (!item.file) return
   commonDownload(item, item.file, '音频', 'isDownloading')
 }
-const downloadSrt = (item: Audio, _: number) => {
-  console.log('item.srt', item.srt)
+/** HEAD 轮询探测文件是否就绪（每 200ms 一次，最长约 5 秒） */
+const waitForFile = async (url: string) => {
+  for (let i = 0; i < 25; i++) {
+    try {
+      if ((await fetch(url, { method: 'HEAD' })).ok) return true
+    } catch {
+      /* 网络抖动或文件未生成，继续重试 */
+    }
+    if (i < 24) await asyncSleep(200)
+  }
+  return false
+}
+const downloadSrt = async (item: Audio, _: number) => {
   if (!item.srt) return
-  commonDownload(item, item.srt, '字幕', 'isSrtLoading')
+  item.isSrtLoading = true
+  try {
+    // 流式生成的音频结束后字幕才异步写入，轮询等待文件就绪（最长约 5 秒）
+    if (!item.srt.startsWith('blob') && !(await waitForFile(downloadFile(item.srt)))) {
+      ElMessage.warning('字幕文件尚未生成，请稍后重试')
+      return
+    }
+    commonDownload(item, item.srt, '字幕', 'isSrtLoading')
+  } catch (err) {
+    console.log(`downloadSrt error: ${item.srt}`, (err as Error).message)
+    ElMessage.error('字幕下载失败，请稍后重试')
+  } finally {
+    item.isSrtLoading = false
+  }
 }
 
 const removeDownloadItem = (item: Audio) => {
@@ -208,6 +232,10 @@ const downloadAll = () => {
   store.audioList.forEach((item, index) => {
     if (!item.isDownloading) {
       downloadAudio(item, index)
+    }
+    // 有字幕时一并下载
+    if (!item.isSrtLoading && item.srt) {
+      downloadSrt(item, index)
     }
   })
 }

@@ -91,7 +91,14 @@ export const createTask = async (data: TaskRequest) => {
   return response.data
 }
 
-export const createTaskStream = async (data: TaskRequest) => {
+export interface CreateStreamResult {
+  stream: ReadableStream
+  /** srt 文件名，由后端在响应头中下发（音频流结束后异步生成） */
+  srt?: string
+}
+export const createTaskStream = async (
+  data: TaskRequest
+): Promise<CreateStreamResult | ResponseWrapper<GenerateResponse>> => {
   const response = await api.post<ReadableStream | ResponseWrapper<GenerateResponse>>(
     `/createStream`,
     data,
@@ -112,7 +119,10 @@ export const createTaskStream = async (data: TaskRequest) => {
     const responseData = JSON.parse(text)
     return responseData
   }
-  return response.data as ReadableStream
+  return {
+    stream: response.data as ReadableStream,
+    srt: response.headers['x-generate-tts-srt'],
+  }
 }
 
 export const downloadFile = (file: string) => `${api.defaults.baseURL}/download/${file}`

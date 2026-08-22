@@ -35,7 +35,9 @@ export function createMiddlewareConfig({ isDev, rateLimit, rateLimitWindow }: Mi
   })
   const pass = (_req: Request, _res: Response, next: NextFunction) => next()
   return {
-    cors: cors(),
+    cors: cors({
+      exposedHeaders: ['x-generate-tts-type', 'x-generate-tts-srt'],
+    }),
     json: express.json({ limit: '20mb' }),
     requestLogger: requestLoggerMiddleware,
     helmet: USE_HELMET ? useHelmet : pass,

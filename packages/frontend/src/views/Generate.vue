@@ -602,13 +602,15 @@ const generateAudioTask = async () => {
 
   try {
     const params = buildParams(inputText)
-    const stream = await createTaskStream(params)
-    if (!(stream instanceof ReadableStream)) {
-      if (stream.code && stream.data) {
-        updateAudioList(stream.data)
+    const streamResult = await createTaskStream(params)
+    if (!('stream' in streamResult)) {
+      if (streamResult.code && streamResult.data) {
+        updateAudioList(streamResult.data)
         return
       }
+      throw new Error('createTaskStream 返回了无法处理的响应')
     }
+    const { stream, srt } = streamResult
     console.log('typeof stream:', typeof stream)
     console.log('stream instanceof ReadableStream :', stream instanceof ReadableStream)
     showStreamButton.value = true
@@ -637,6 +639,7 @@ const generateAudioTask = async () => {
         file: name,
         id: name,
         name,
+        srt,
         blobs,
       }
       generationStore.updateProgress(100)
@@ -653,7 +656,7 @@ const generateAudioTask = async () => {
       console.error(msg)
     }
     processor.value = createAudioStreamProcessor(
-      stream as unknown as ReadableStream,
+      stream,
       onStart,
       onProgress,
       onFinished,

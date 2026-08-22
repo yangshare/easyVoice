@@ -98,6 +98,16 @@ async function collectSegmentBufferWithRetry(
   throw lastError instanceof Error ? lastError : new Error(String(lastError))
 }
 
+/** 根据音频文件名推导 srt 文件名（与非流式接口下发的纯文件名格式一致） */
+const srtFileOf = (fileName: string) => fileName.replace('.mp3', '.srt')
+
+/** 流式响应公共头：标记流式类型并下发 srt 文件名（音频流结束后异步生成，前端轮询下载） */
+const streamHeaders = (srtFile: string) => ({
+  'content-type': 'application/octet-stream',
+  'x-generate-tts-type': 'stream',
+  'x-generate-tts-srt': srtFile,
+})
+
 /** 标记任务失败并销毁输出流（LLM 流式与分段列表两条路径共用） */
 const failTaskAndStream = (task: Task, outputStream: PassThrough, cause: unknown): Error => {
   const error = cause instanceof Error ? cause : new Error(String(cause))
@@ -204,6 +214,8 @@ async function generateWithLLMStream(task: Task) {
         failStream(new Error('Client disconnected'))
       }
     })
+    res.setHeader('x-generate-tts-type', 'stream')
+    res.setHeader('x-generate-tts-srt', srtFileOf(id))
     outputStream.pipe(res)
     outputStream.pipe(localStream)
 
@@ -252,7 +264,7 @@ const buildFinal = async (finalSegments: TTSResult[], id: string) => {
   await concatDirAudio({ inputDir: finalDir, fileList, outputFile })
   return {
     audio: `${STATIC_DOMAIN}/${id}`,
-    srt: `${STATIC_DOMAIN}/${id.replace('.mp3', '.srt')}`,
+    srt: `${STATIC_DOMAIN}/${srtFileOf(id)}`,
   }
 }
 
@@ -283,11 +295,7 @@ async function buildSegment(params: TTSParams, task: Task, dir: string = '') {
   const { res } = task.context as Required<NonNullable<Task['context']>>
 
   streamToResponse(res, stream, {
-    headers: {
-      'content-type': 'application/octet-stream',
-      'x-generate-tts-type': 'stream',
-      'Access-Control-Expose-Headers-generate-tts-id': task.id,
-    },
+    headers: streamHeaders(srtFileOf(segment.id)),
     fileName: segment.id,
     onError: (err) => `Custom error: ${err.message}`,
     onEnd: () => {
@@ -340,11 +348,7 @@ async function buildSegmentList(segments: BuildSegment[], task: Task): Promise<v
   const outputStream = new PassThrough()
 
   streamToResponse(res, outputStream, {
-    headers: {
-      'content-type': 'application/octet-stream',
-      'x-generate-tts-type': 'stream',
-      'Access-Control-Expose-Headers-generate-tts-id': task.id,
-    },
+    headers: streamHeaders(srtFileOf(segment.id)),
     onError: (err) => `Custom error: ${err.message}`,
     fileName: segment.id,
     onEnd: () => {
