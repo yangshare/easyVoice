@@ -88,14 +88,7 @@ async function generateWithLLM(
   if (length <= 1) {
     const prompt = getPrompt(lang, voiceList, segments[0])
     // logger.debug(`Prompt for LLM: ${prompt}`)
-    const llmResponse = await fetchLLMSegment(prompt)
-    let llmSegments = llmResponse?.result || llmResponse?.segments || []
-    if (!Array.isArray(llmSegments)) {
-      task?.endTask?.(task.id)
-      throw new Error(
-        'LLM response is not an array, please switch to Edge TTS mode or use another model'
-      )
-    }
+    const llmSegments = await fetchLLMSegment(prompt)
     const result = await buildSegmentList(segment, formatLlmSegments(llmSegments), task)
     task?.updateProgress?.(task.id, 100)
     return result
@@ -110,13 +103,7 @@ async function generateWithLLM(
       count++
       const prompt = getPrompt(lang, voiceList, seg)
       // logger.debug(`Prompt for LLM: ${prompt}`)
-      const llmResponse = await fetchLLMSegment(prompt)
-      let llmSegments = llmResponse?.result || llmResponse?.segments || []
-      if (!Array.isArray(llmSegments)) {
-        throw new Error(
-          'LLM response is not an array, please switch to Edge TTS mode or use another model'
-        )
-      }
+      const llmSegments = await fetchLLMSegment(prompt)
       const result = await buildSegmentList(
         { ...segment, id: `[segments:${count}]${segment.id}` },
         formatLlmSegments(llmSegments)

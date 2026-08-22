@@ -1,5 +1,6 @@
 import { openai } from '../utils/openai'
 import { logger } from '../utils/logger'
+import { jsonrepair } from 'jsonrepair'
 
 const MAX_RETRIES = 3
 
@@ -19,34 +20,54 @@ function extractJsonString(raw: string): string {
   return text
 }
 
-function parseSegmentParams(raw: string): any {
-  const params = JSON.parse(extractJsonString(raw))
-  if (!params || typeof params !== 'object') {
-    throw new Error('Invalid LLM params format')
+/** LLM 分段输出的单条结构（见 prompt/generateSegment.ts 中的 JSON 示例） */
+export interface LlmSegment {
+  name: string
+  character?: string
+  rate?: string
+  volume?: string
+  pitch?: string
+  text: string
+}
+
+function parseSegments(raw: string): LlmSegment[] {
+  // LLM 输出的 JSON 常有单引号、尾逗号、缺引号等瑕疵，先修复再解析
+  const params = JSON.parse(jsonrepair(extractJsonString(raw)))
+  const segments = params?.segments
+  if (!Array.isArray(segments)) {
+    throw new Error(
+      'LLM 返回的 segments 不是数组，请更换模型或改用 Edge TTS 模式'
+    )
   }
-  return params
+  if (segments.length === 0) {
+    throw new Error('LLM 返回的分段列表为空，请重试或更换模型')
+  }
+  return segments
 }
 
 /**
  * 单次请求并解析分段参数
  * content 为空时，尝试从 reasoning_content（推理模型）中提取 JSON
  */
-async function requestOnce(prompt: string): Promise<any> {
+async function requestOnce(prompt: string): Promise<LlmSegment[]> {
   const response = await openai.createChatCompletion({
     messages: [
       {
         role: 'system',
-        content: 'You are a helpful assistant. And you can return valid json object',
+        content:
+          'You are a helpful assistant. You must respond with a single valid JSON object only. Use double quotes for all keys and string values.',
       },
       { role: 'user', content: prompt },
     ],
+    // 结构化分段输出任务，低温度可显著减少格式跑偏（单引号、编造字段等）
+    temperature: 0.3,
     response_format: { type: 'json_object' },
   })
 
   const message = response.choices?.[0]?.message
   const content = typeof message?.content === 'string' ? message.content.trim() : ''
   if (content) {
-    return parseSegmentParams(content)
+    return parseSegments(content)
   }
 
   const reasoning =
@@ -55,7 +76,7 @@ async function requestOnce(prompt: string): Promise<any> {
       : ''
   if (reasoning) {
     try {
-      return parseSegmentParams(reasoning)
+      return parseSegments(reasoning)
     } catch {
       // reasoning 中没有完整 JSON，走统一报错
     }
@@ -67,10 +88,10 @@ async function requestOnce(prompt: string): Promise<any> {
 }
 
 /**
- * 从 LLM 获取分段参数（带重试）
+ * 从 LLM 获取分段列表（带重试）
  * 空响应、JSON 解析失败、网络抖动等偶发错误会自动重试
  */
-export async function fetchLLMSegment(prompt: string, maxRetries: number = MAX_RETRIES): Promise<any> {
+export async function fetchLLMSegment(prompt: string, maxRetries: number = MAX_RETRIES): Promise<LlmSegment[]> {
   let lastError: unknown
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
@@ -93,7 +114,7 @@ export async function fetchLLMSegment(prompt: string, maxRetries: number = MAX_R
  *   无效时先做大小写无关匹配，仍无效则回退到 fallbackVoice（或列表第一个声音）
  */
 export function formatLlmSegments(
-  llmSegments: any[],
+  llmSegments: LlmSegment[],
   voiceList: VoiceConfig[],
   fallbackVoice?: string
 ): any[] {
